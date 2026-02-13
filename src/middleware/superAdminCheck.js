@@ -1,17 +1,13 @@
 const { Admin, Role } = require("../models");
 
-
 const requireSuperAdminForLoginAttempts = async (req, res, next) => {
   try {
-    const user = req.user;
-
-    if (!user) {
+    if (!req.user) {
       return res.status(401).json({ message: "Authentication required." });
     }
 
-  
     const admin = await Admin.findOne({
-      where: { admin_id: user.admin_id },
+      where: { admin_id: req.user.admin_id },
       include: [{
         model: Role,
         attributes: ["role_name"]
@@ -22,8 +18,9 @@ const requireSuperAdminForLoginAttempts = async (req, res, next) => {
       return res.status(404).json({ message: "Admin not found." });
     }
 
-  
-    if (admin.Role?.role_name !== "Super Admin" && admin.Role?.role_name !== "DEVELOPER") {
+    const role = admin.Role?.role_name?.toUpperCase();
+
+    if (!["SUPER ADMIN", "DEVELOPER"].includes(role)) {
       return res.status(403).json({
         message: "Only Super Admins or Developers can manage login attempts.",
         requiredRole: "Super Admin or Developer",
@@ -31,8 +28,8 @@ const requireSuperAdminForLoginAttempts = async (req, res, next) => {
       });
     }
 
-
-    req.user.role = admin.Role?.role_name;
+  
+    req.user.dbRole = admin.Role.role_name;
 
     next();
   } catch (error) {
