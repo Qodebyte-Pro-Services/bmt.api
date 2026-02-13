@@ -128,5 +128,19 @@ async function sendNotificationEmail(to, subject, html) {
   return transporter.sendMail(mailOptions);
 }
 
+async function sendAdminAttemptEmail(toEmail, attemptData) {
+  const { full_name, email} = attemptData;
+  const subject = "Blocked Admin Registration Attempt";
+  const text = `A new admin registration attempt was blocked.\n\nFull Name: ${full_name}\nEmail: ${email}}`;
+  
+  return transporter.sendMail({
+    from: process.env.EMAIL_USER,
+    to: toEmail,
+    subject,
+    text,
+  });
+}
 
-module.exports = { sendOtpEmail, sendNewAdminEmail, sendRegisteredAdminEmail, sendNotificationEmail };
+
+
+module.exports = { sendOtpEmail, sendNewAdminEmail, sendRegisteredAdminEmail, sendNotificationEmail, sendAdminAttemptEmail };

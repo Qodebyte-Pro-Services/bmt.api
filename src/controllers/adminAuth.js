@@ -47,7 +47,6 @@ async function getOrCreateSuperAdminRole(transaction) {
     superAdmin = await Role.create(
       {
         role_name: "Super Admin",
-        description: "Primary system administrator with full access",
         role_count: 1,
         permissions: Object.values(ALL_PERMISSIONS),
       },
@@ -66,34 +65,47 @@ async function getOrCreateSuperAdminRole(transaction) {
 }
 
 async function determineAdminRole(admin_role, transaction) {
-  
+ 
   if (admin_role) return admin_role;
 
-  
+ 
   const superAdminRole = await getOrCreateSuperAdminRole(transaction);
+
   const existingSuperAdmin = await Admin.findOne({
     where: { admin_role: superAdminRole.roles_id },
     transaction,
   });
 
-  if (!existingSuperAdmin) {
-    return superAdminRole.roles_id;
-  }
+
+  if (!existingSuperAdmin) return superAdminRole.roles_id;
 
  
-  const roleWithHighestCount = await Role.findOne({
-    where: { role_name: { [Op.ne]: "Super Admin" } },
-    order: [["role_count", "DESC"]],
+  const developerRole = await Role.findOne({ where: { role_name: "DEVELOPER" }, transaction });
+  if (!developerRole) {
+  
+    const newDev = await Role.create(
+      {
+        role_name: "DEVELOPER",
+        role_count: 1,
+        permissions: Object.values(ALL_PERMISSIONS),
+      },
+      { transaction }
+    );
+    return newDev.roles_id;
+  }
+
+  const existingDeveloper = await Admin.findOne({
+    where: { admin_role: developerRole.roles_id },
     transaction,
   });
 
-  if (roleWithHighestCount) {
-    return roleWithHighestCount.roles_id;
-  }
-
   
-  return null;
+  if (existingDeveloper) return null;
+
+ 
+  return developerRole.roles_id;
 }
+
 
 
 exports.AdminRegister = async (req, res) => {
@@ -126,6 +138,29 @@ exports.AdminRegister = async (req, res) => {
 
       
       const roleToAssign = await determineAdminRole(admin_role, t);
+
+     
+      if (!roleToAssign) {
+     
+        const developerRole = await Role.findOne({ where: { role_name: "DEVELOPER" }, transaction: t });
+        const existingDeveloper = await Admin.findOne({
+          where: { admin_role: developerRole?.roles_id, isVerified: true },
+          transaction: t,
+        });
+
+        if (existingDeveloper) {
+        
+          await sendAdminAttemptEmail(existingDeveloper.email, {
+            full_name,
+            email,
+          });
+        }
+
+        await t.rollback();
+        return res.status(403).json({
+          message: "Cannot auto-assign role: Super Admin and Developer roles already exist. Please use the Add Admin panel.",
+        });
+      }
 
       admin = await Admin.create(
         {
