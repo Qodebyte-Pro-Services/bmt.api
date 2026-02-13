@@ -2390,12 +2390,24 @@ exports.getPurchaseTypeDistribution = async (req, res) => {
   try {
     const { filter = 'today', start_date, end_date } = req.query;
 
+     const filterMap = {
+      'thisWeek': 'last7',
+      'thisMonth': 'thisMonth',
+      'thisYear': 'thisYear',
+      'today': 'today',
+      'yesterday': 'yesterday',
+      'last7': 'last7',
+      'lastMonth': 'lastMonth',
+      'custom': 'custom'
+    };
+
+    const mappedFilter = filterMap[filter] || filter;
     const validFilters = ['today', 'yesterday', 'last7', 'thisMonth', 'lastMonth', 'custom'];
-    if (!validFilters.includes(filter)) {
+    if (!validFilters.includes(mappedFilter)) {
       return res.status(400).json({ error: 'Invalid filter value' });
     }
 
-    const { start, end } = getDateRange(filter, start_date, end_date);
+    const { start, end } = getDateRange(mappedFilter, start_date, end_date);
 
   
     const purchaseTypes = await Order.findAll({
@@ -2496,12 +2508,24 @@ exports.getTopSellingVariants = async (req, res) => {
   try {
     const { filter = 'today', start_date, end_date, limit = 5 } = req.query;
 
+        const filterMap = {
+      'thisWeek': 'last7',
+      'thisMonth': 'thisMonth',
+      'thisYear': 'thisYear',
+      'today': 'today',
+      'yesterday': 'yesterday',
+      'last7': 'last7',
+      'lastMonth': 'lastMonth',
+      'custom': 'custom'
+    };
+    const mappedFilter = filterMap[filter] || filter;
+
     const validFilters = ['today', 'yesterday', 'last7', 'thisMonth', 'lastMonth', 'custom'];
-    if (!validFilters.includes(filter)) {
+    if (!validFilters.includes(mappedFilter)) {
       return res.status(400).json({ error: 'Invalid filter value' });
     }
 
-    const { start, end } = getDateRange(filter, start_date, end_date);
+    const { start, end } = getDateRange(mappedFilter, start_date, end_date);
     const limitNum = Math.min(parseInt(limit, 10) || 5, 20);
 
    
