@@ -23,10 +23,10 @@ const requireSuperAdminForLoginAttempts = async (req, res, next) => {
     }
 
   
-    if (admin.Role?.role_name !== "Super Admin") {
+    if (admin.Role?.role_name !== "Super Admin" && admin.Role?.role_name !== "DEVELOPER") {
       return res.status(403).json({
-        message: "Only Super Admins can manage login attempts.",
-        requiredRole: "Super Admin",
+        message: "Only Super Admins or Developers can manage login attempts.",
+        requiredRole: "Super Admin or Developer",
         yourRole: admin.Role?.role_name || "Unknown"
       });
     }
