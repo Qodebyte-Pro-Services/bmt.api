@@ -16,12 +16,15 @@ function authenticateToken(req, res, next) {
 
       
       if (payload.admin_id) {
-        req.user = {
-          admin_id: payload.admin_id,
-          email: payload.email,
-          role: payload.role || null,
-          userType: "admin",
-        };
+          req.user = {
+    admin_id: payload.admin_id,
+    email: payload.email,
+    role: payload.role || null,
+    permissions: payload.permissions || [],
+    full_name: payload.full_name || null,
+    username: payload.username || null,
+    userType: "admin",
+  };
       }else {
         return res.status(401).json({ message: "Invalid token payload." });
       }

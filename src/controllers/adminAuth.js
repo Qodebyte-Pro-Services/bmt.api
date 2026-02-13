@@ -206,7 +206,9 @@ exports.login = async (req, res) => {
     const userAgent = req.headers["user-agent"];
     const ip = getClientIP(req);
 
-    const isSuperAdmin = admin.Role?.role_name === "Super Admin";
+    const isSuperAdmin =
+  admin.Role?.role_name === "Super Admin" ||
+  admin.Role?.role_name === "DEVELOPER";
 
     if (!isSuperAdmin) {
       const loginAttempt = await LoginAttempt.create({

@@ -12,6 +12,8 @@ const routes = require('./routes');
 
 const path = require('path');
 
+const bcrypt = require('bcrypt');
+
 const setupSwagger = require('../swagger');
 const morgan = require('morgan');
 const startReportCron = require("./cron/report");
@@ -53,6 +55,14 @@ app.get('/', (req, res) => {
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
 const PORT = process.env.PORT || 5002;
+
+// bcrypt.hash('Lord2u4ever', 10)
+//   .then(hash => {
+//     console.log('Hashed password:', hash);
+//   })
+//   .catch(err => {
+//     console.error('Error hashing password:', err);
+//   });
 
 if (process.env.NODE_ENV === 'production') {
   sequelize.authenticate()
