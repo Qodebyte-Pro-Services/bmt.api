@@ -392,7 +392,7 @@ exports.listProducts = async (req, res) => {
         {
           model: Variant,
           as: 'variants',
-          attributes: ['id', 'sku', 'quantity', 'selling_price', 'cost_price', 'threshold']
+          attributes: ['id', 'sku', 'quantity', 'selling_price', 'cost_price', 'threshold', 'image_url', 'barcode']
         }
       ],
       offset: Number(offset),

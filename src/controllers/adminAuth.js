@@ -1204,12 +1204,19 @@ exports.getAdmins = async (req, res) => {
     const admins = await Admin.findAll({
       include: [
         {
-          model: Role, 
-          attributes: ["roles_id", "role_name","permissions"],
+          model: Role,
+          attributes: ["roles_id", "role_name", "permissions"],
+          where: {
+            role_name: {
+              [Op.ne]: "DEVELOPER",
+            },
+          },
+          required: true,
         },
       ],
-      attributes: { exclude: ["password"] }, 
+      attributes: { exclude: ["password"] },
     });
+
     return res.status(200).json({ admins });
   } catch (error) {
     console.error("❌ getAdmins error:", error);
@@ -1221,13 +1228,26 @@ exports.getMiniAdminData = async (req, res) => {
   try {
     const admins = await Admin.findAll({
       attributes: ["admin_id", "full_name", "email"],
+      include: [
+        {
+          model: Role,
+          attributes: [],
+        where: {
+            role_name: {
+              [Op.notIn]: ["Super Admin", "DEVELOPER"],
+            },
+          },
+          required: true,
+        },
+      ],
     });
+
     return res.status(200).json({ admins });
   } catch (error) {
     console.error("❌ getMiniAdminData error:", error);
     return res.status(500).json({ message: "Internal server error", error });
   }
-}
+};
 
 exports.getAdminById = async (req, res) => {
   try {
