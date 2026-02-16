@@ -40,6 +40,14 @@ function validateInput(fields, req, res) {
   return true;
 }
 
+function splitFullName(full_name) {
+  const parts = full_name.trim().split(/\s+/);
+  return {
+    firstName: parts[0] || null,
+    lastName: parts.slice(1).join(" ") || null,
+  };
+}
+
 
 async function getOrCreateSuperAdminRole(transaction) {
   let superAdmin = await Role.findOne({ where: { role_name: "Super Admin" }, transaction });
@@ -914,6 +922,24 @@ exports.verifyAdminOtp = async (req, res) => {
           transaction: t,
         });
       }
+
+       if (admin.Role?.role_name === "Super Admin") {
+    const settings = await Settings.findOne({ transaction: t });
+
+    if (settings && !settings.owner_email) {
+      const { firstName, lastName } = splitFullName(admin.full_name);
+
+      await settings.update(
+        {
+          owner_first_name: firstName,
+          owner_last_name: lastName,
+          owner_email: admin.email,
+          created_by: admin.admin_id,
+        },
+        { transaction: t }
+      );
+    }
+  }
 
       token = generateToken({
         admin_id: admin.admin_id,
