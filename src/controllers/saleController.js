@@ -9,343 +9,299 @@ const { getDateRange } = require('../utils/analtyicsHelper');
 const { validateSalesReportQuery } = require("../utils/reportValidation");
 const { buildSalesReport } = require("../services/salesReport");
 
-
-
-  exports.createSale = async (req, res) => {
-  const t = await sequelize.transaction();
-
- 
+exports.createSale = async (req, res) => {
   const round = (n) => Number(Number(n).toFixed(2));
 
   try {
-    const {
-      customer_id,
-      customer,
-      items,
-      payments = [],
-      credit,
-      installment,
-      discount = 0,
-      coupon = 0,
-      taxes = 0,
-      note,
-    } = req.body;
+    const order = await sequelize.transaction(async (t) => {
+      const {
+        customer_id,
+        customer,
+        items,
+        payments = [],
+        credit,
+        installment,
+        discount = 0,
+        coupon = 0,
+        taxes = 0,
+        note,
+      } = req.body;
 
-    const admin_id = req.user.admin_id;
+      const admin_id = req.user.admin_id;
 
-    if (!items || !Array.isArray(items) || items.length === 0) {
-      throw new Error("Sale must contain at least one item");
-    }
-
-   
-    let customerId = customer_id || null;
-
-    if (!customerId && !customer) {
-      // No customer ID and no customer data - need a walk-in customer
-      let walkIn = await Customer.findOne({
-        where: {
-          [Op.or]: [
-            { is_walk_in: true },
-            { name: "Walk-in" }
-          ]
-        },
-        transaction: t,
-      });
-
-      if (!walkIn) {
-        walkIn = await Customer.create(
-          { name: "Walk-in", is_walk_in: true },
-          { transaction: t }
-        );
+      if (!items || !Array.isArray(items) || items.length === 0) {
+        throw new Error("Sale must contain at least one item");
       }
 
-      customerId = walkIn.id;
-    } else if (!customerId && customer) {
-      // Customer object provided without ID
-      // If it's a walk-in, use existing one instead of creating duplicate
-      if (customer.is_walk_in === true || customer.name?.toLowerCase() === 'walk-in') {
-        // It's a walk-in customer - check for existing one
-        let existingWalkIn = await Customer.findOne({
-          where: {
-            [Op.or]: [
-              { is_walk_in: true },
-              { name: "Walk-in" }
-            ]
-          },
+     
+      let customerId = customer_id || null;
+
+      if (!customerId && !customer) {
+        let walkIn = await Customer.findOne({
+          where: { [Op.or]: [{ is_walk_in: true }, { name: "Walk-in" }] },
           transaction: t,
         });
 
-        if (existingWalkIn) {
-          customerId = existingWalkIn.id;
-        } else {
-          // Create new walk-in
-          const newWalkIn = await Customer.create(
+        if (!walkIn) {
+          walkIn = await Customer.create(
             { name: "Walk-in", is_walk_in: true },
             { transaction: t }
           );
-          customerId = newWalkIn.id;
         }
-      } else {
-        // Regular customer - create normally
-        const created = await Customer.create(customer, { transaction: t });
-        customerId = created.id;
+        customerId = walkIn.id;
       }
-    }
 
-  
-    let subtotal = 0;
-    let tax_total = Number(taxes);
-    let discount_total = Number(discount);
-    let coupon_total = Number(coupon);
-
-    for (const item of items) {
-      // Calculate item total from unit_price * quantity if total_price not provided
-      const itemTotal = Number(item.total_price || (item.unit_price * item.quantity) || 0);
-      subtotal += itemTotal;
-
-      if (Array.isArray(item.taxes)) {
-        tax_total += item.taxes.reduce((s, t) => s + Number(t.amount || 0), 0);
+      if (!customerId && customer) {
+        if (customer.is_walk_in || customer.name?.toLowerCase() === "walk-in") {
+          const walkIn = await Customer.findOne({
+            where: { [Op.or]: [{ is_walk_in: true }, { name: "Walk-in" }] },
+            transaction: t,
+          });
+          customerId = walkIn
+            ? walkIn.id
+            : (await Customer.create(
+                { name: "Walk-in", is_walk_in: true },
+                { transaction: t }
+              )).id;
+        } else {
+          customerId = (await Customer.create(customer, { transaction: t })).id;
+        }
       }
-      if (Array.isArray(item.discounts)) {
-        discount_total += item.discounts.reduce(
-          (s, d) => s + Number(d.amount || 0),
-          0
-        );
-      }
-      if (Array.isArray(item.coupons)) {
-        coupon_total += item.coupons.reduce(
-          (s, c) => s + Number(c.amount || 0),
-          0
-        );
-      }
-    }
 
-    subtotal = round(subtotal);
-    // Use sent tax value if provided, otherwise calculate from items
-    tax_total = round(tax_total > 0 ? tax_total : (Number(taxes) || 0));
-    discount_total = round(discount_total > 0 ? discount_total : (Number(discount) || 0));
-    coupon_total = round(coupon_total);
+      
+      let subtotal = 0;
+      let tax_total = Number(taxes);
+      let discount_total = Number(discount);
+      let coupon_total = Number(coupon);
 
-    const total_amount = round(
-      subtotal + tax_total - discount_total - coupon_total
-    );
-
-    const paid_amount = round(
-      payments.reduce((sum, p) => sum + Number(p.amount || 0), 0)
-    );
-
-    
-    if (installment) {
-      const downPaymentAmount = installment.downPayment || installment.down_payment;
-      if (paid_amount !== round(downPaymentAmount)) {
-        throw new Error("Down payment mismatch");
-      }
-    }
-
-    if (credit) {
-      const creditType = credit.creditType || credit.type;
-      if (creditType === "full" && paid_amount > 0) {
-        throw new Error("Full credit cannot have upfront payment");
-      }
-      if (creditType === "partial" && paid_amount >= total_amount) {
-        throw new Error("Partial credit must be less than total");
-      }
-    }
-
-    if (!credit && !installment && paid_amount !== total_amount) {
-      console.error(`Payment validation failed:
-        Subtotal: ${subtotal}
-        Tax: ${tax_total}
-        Discount: ${discount_total}
-        Total Expected: ${total_amount}
-        Total Paid: ${paid_amount}
-        Payment Methods: ${JSON.stringify(payments)}
-      `);
-      throw new Error(`Payment total must equal order total (Expected: ${total_amount}, Paid: ${paid_amount})`);
-    }
-
-   
-    const order = await Order.create(
-      {
-        customer_id: customerId,
-        subtotal,
-        tax_total,
-        discount_total,
-        coupon_total,
-        total_amount,
-        status: installment ? "pending" : "completed",
-        purchase_type: "in_store",
-        admin_id,
-        note,
-      },
-      { transaction: t }
-    );
-
-   
-    for (const item of items) {
-      // Calculate total_price from unit_price * quantity if not provided
-      const itemTotalPrice = item.total_price || (item.unit_price * item.quantity);
-      await OrderItem.create(
-        {
-          order_id: order.id,
-          product_id: item.product_id,
-          variant_id: item.variant_id,
-          quantity: item.quantity,
-          unit_price: round(item.unit_price),
-          total_price: round(itemTotalPrice),
-        },
-        { transaction: t }
-      );
-    }
-
-   
-    for (const pay of payments) {
-      await OrderPayment.create(
-        {
-          order_id: order.id,
-          method: pay.method,
-          amount: round(pay.amount),
-          reference: pay.reference || null,
-        },
-        { transaction: t }
-      );
-    }
-
-    
-    if (credit) {
-      await CreditAccount.create(
-        {
-          order_id: order.id,
-          customer_id: customerId,
-          total_amount,
-          amount_paid: paid_amount,
-          balance: round(total_amount - paid_amount),
-          credit_type: credit.creditType || credit.type,
-          issued_at: new Date(),
-        },
-        { transaction: t }
-      );
-    }
-
-  
-    if (!installment) {
       for (const item of items) {
-        const variant = await Variant.findByPk(item.variant_id, {
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
+        const itemTotal =
+          Number(item.total_price) ||
+          Number(item.unit_price) * Number(item.quantity);
 
-        if (!variant) throw new Error("Variant not found");
+        subtotal += itemTotal;
 
-        if (variant.quantity < item.quantity) {
-          throw new Error(
-            `Insufficient stock for variant ${variant.id}. Available: ${variant.quantity}`
+        if (Array.isArray(item.taxes)) {
+          tax_total += item.taxes.reduce((s, t) => s + Number(t.amount || 0), 0);
+        }
+        if (Array.isArray(item.discounts)) {
+          discount_total += item.discounts.reduce(
+            (s, d) => s + Number(d.amount || 0),
+            0
           );
         }
+        if (Array.isArray(item.coupons)) {
+          coupon_total += item.coupons.reduce(
+            (s, c) => s + Number(c.amount || 0),
+            0
+          );
+        }
+      }
 
+      subtotal = round(subtotal);
+      tax_total = round(tax_total);
+      discount_total = round(discount_total);
+      coupon_total = round(coupon_total);
 
-        const qtyChange = -Math.abs(item.quantity);
+      const total_amount = round(
+        subtotal + tax_total - discount_total - coupon_total
+      );
 
-        await InventoryLog.create(
+      const paid_amount = round(
+        payments.reduce((s, p) => s + Number(p.amount || 0), 0)
+      );
+
+      
+      if (installment) {
+        const down = round(
+          installment.downPayment || installment.down_payment
+        );
+        if (paid_amount !== down) throw new Error("Down payment mismatch");
+      }
+
+      if (credit) {
+        const type = credit.creditType || credit.type;
+        if (type === "full" && paid_amount > 0)
+          throw new Error("Full credit cannot have upfront payment");
+        if (type === "partial" && paid_amount >= total_amount)
+          throw new Error("Partial credit must be less than total");
+      }
+
+      if (!credit && !installment && paid_amount !== total_amount) {
+        throw new Error(
+          `Payment mismatch (Expected ${total_amount}, Paid ${paid_amount})`
+        );
+      }
+
+    
+      const order = await Order.create(
+        {
+          customer_id: customerId,
+          subtotal,
+          tax_total,
+          discount_total,
+          coupon_total,
+          total_amount,
+          status: installment ? "pending" : "completed",
+          purchase_type: "in_store",
+          admin_id,
+          note,
+        },
+        { transaction: t }
+      );
+
+   
+      for (const item of items) {
+        const total_price =
+          item.total_price || item.unit_price * item.quantity;
+
+        await OrderItem.create(
           {
+            order_id: order.id,
+            product_id: item.product_id,
             variant_id: item.variant_id,
-           quantity: qtyChange,
-            type: "sale",
-            note: credit
-              ? `CREDIT_ORDER_${order.id}`
-              : `CASH_ORDER_${order.id}`,
-            recorded_by: admin_id,
-            recorded_by_type: 'admin',
-            reason: 'decrease',
+            quantity: item.quantity,
+            unit_price: round(item.unit_price),
+            total_price: round(total_price),
+          },
+          { transaction: t }
+        );
+      }
+
+     
+      for (const pay of payments) {
+        await OrderPayment.create(
+          {
+            order_id: order.id,
+            method: pay.method,
+            amount: round(pay.amount),
+            reference: pay.reference || null,
+          },
+          { transaction: t }
+        );
+      }
+
+    
+      if (credit) {
+        await CreditAccount.create(
+          {
+            order_id: order.id,
+            customer_id: customerId,
+            total_amount,
+            amount_paid: paid_amount,
+            balance: round(total_amount - paid_amount),
+            credit_type: credit.creditType || credit.type,
+            issued_at: new Date(),
+          },
+          { transaction: t }
+        );
+      }
+
+   
+      if (!installment) {
+        for (const item of items) {
+          const variant = await Variant.findByPk(item.variant_id, {
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+
+          if (!variant) throw new Error("Variant not found");
+          if (variant.quantity < item.quantity)
+            throw new Error("Insufficient stock");
+
+          await InventoryLog.create(
+            {
+              variant_id: item.variant_id,
+              quantity: -item.quantity,
+              type: "sale",
+              note: credit
+                ? `CREDIT_ORDER_${order.id}`
+                : `CASH_ORDER_${order.id}`,
+              recorded_by: admin_id,
+              recorded_by_type: "admin",
+              reason: "decrease",
+            },
+            { transaction: t }
+          );
+
+          await variant.decrement("quantity", {
+            by: item.quantity,
+            transaction: t,
+          });
+        }
+      }
+
+    
+      if (installment) {
+        const down = round(
+          installment.downPayment || installment.down_payment
+        );
+        const count =
+          installment.numberOfPayments || installment.number_of_payments;
+
+        if (count <= 1) throw new Error("Invalid installment count");
+
+        const remaining = round(total_amount - down);
+        const per = round(remaining / (count - 1));
+
+        const plan = await InstallmentPlan.create(
+          {
+            order_id: order.id,
+            customer_id: customerId,
+            total_amount,
+            down_payment: down,
+            remaining_balance: remaining,
+            number_of_payments: count,
+            payment_frequency:
+              installment.paymentFrequency || installment.payment_frequency,
+            start_date:
+              installment.startDate || installment.start_date,
+            notes: installment.notes,
           },
           { transaction: t }
         );
 
-        await variant.decrement("quantity", {
-          by: item.quantity,
-          transaction: t,
-        });
+        await InstallmentPayment.create(
+          {
+            installment_plan_id: plan.id,
+            payment_number: 0,
+            amount: down,
+            paid_at: new Date(),
+            status: "paid",
+            method: payments[0]?.method || "cash",
+            type: "down_payment",
+          },
+          { transaction: t }
+        );
+
+        let allocated = 0;
+        for (let i = 1; i < count; i++) {
+          const due = new Date(
+            installment.startDate || installment.start_date
+          );
+          due.setMonth(due.getMonth() + i);
+
+          const amount =
+            i === count - 1 ? round(remaining - allocated) : per;
+
+          allocated += amount;
+
+          await InstallmentPayment.create(
+            {
+              installment_plan_id: plan.id,
+              payment_number: i,
+              amount,
+              due_date: due,
+              type: "installment",
+            },
+            { transaction: t }
+          );
+        }
       }
-    }
 
-    
-   if (installment) {
-  const downPayment =
-    round(installment.downPayment || installment.down_payment);
+      return order;
+    });
 
-  const totalPayments =
-    installment.numberOfPayments || installment.number_of_payments;
-
-  if (totalPayments <= 1) {
-    throw new Error("Number of payments must be greater than 1");
-  }
-
-  
-  const installmentCount = totalPayments - 1;
-
-  const remainingBalance = round(total_amount - downPayment);
-
-  const perPayment = round(remainingBalance / installmentCount);
-
- 
-  const plan = await InstallmentPlan.create(
-    {
-      order_id: order.id,
-      customer_id: customerId,
-      total_amount,
-      down_payment: downPayment,
-      remaining_balance: remainingBalance,
-      number_of_payments: totalPayments, 
-      payment_frequency:
-        installment.paymentFrequency || installment.payment_frequency,
-      start_date: installment.startDate || installment.start_date,
-      notes: installment.notes,
-    },
-    { transaction: t }
-  );
-
-  
-  await InstallmentPayment.create(
-    {
-      installment_plan_id: plan.id,
-      payment_number: 0, 
-      amount: downPayment,
-      paid_at: new Date(),
-      status: "paid",
-      method: payments[0]?.method || "cash",
-      type: "down_payment",
-    },
-    { transaction: t }
-  );
-
-  let allocated = 0;
-
-  for (let i = 1; i <= installmentCount; i++) {
-    const due = new Date(installment.startDate || installment.start_date);
-  due.setMonth(due.getMonth() + i);
-
-  const amount =
-    i === installmentCount
-      ? round(remainingBalance - allocated)
-      : perPayment;
-
-  allocated += amount;
-
-  await InstallmentPayment.create(
-    {
-      installment_plan_id: plan.id,
-      payment_number: i,
-      amount,
-      due_date: due,
-      type: "installment",
-    },
-    { transaction: t }
-  );
-  }
-}
-
-
-    await t.commit();
 
     const sale = await Order.findByPk(order.id, {
       include: [
@@ -358,12 +314,367 @@ const { buildSalesReport } = require("../services/salesReport");
     });
 
     return res.status(201).json(sale);
+
   } catch (err) {
-    await t.rollback();
     console.error("❌ createSale error:", err);
     return res.status(400).json({ message: err.message });
   }
 };
+
+//   exports.createSale = async (req, res) => {
+//   const t = await sequelize.transaction();
+
+ 
+//   const round = (n) => Number(Number(n).toFixed(2));
+
+//   try {
+//     const {
+//       customer_id,
+//       customer,
+//       items,
+//       payments = [],
+//       credit,
+//       installment,
+//       discount = 0,
+//       coupon = 0,
+//       taxes = 0,
+//       note,
+//     } = req.body;
+
+//     const admin_id = req.user.admin_id;
+
+//     if (!items || !Array.isArray(items) || items.length === 0) {
+//       throw new Error("Sale must contain at least one item");
+//     }
+
+   
+//     let customerId = customer_id || null;
+
+//     if (!customerId && !customer) {
+//       // No customer ID and no customer data - need a walk-in customer
+//       let walkIn = await Customer.findOne({
+//         where: {
+//           [Op.or]: [
+//             { is_walk_in: true },
+//             { name: "Walk-in" }
+//           ]
+//         },
+//         transaction: t,
+//       });
+
+//       if (!walkIn) {
+//         walkIn = await Customer.create(
+//           { name: "Walk-in", is_walk_in: true },
+//           { transaction: t }
+//         );
+//       }
+
+//       customerId = walkIn.id;
+//     } else if (!customerId && customer) {
+//       // Customer object provided without ID
+//       // If it's a walk-in, use existing one instead of creating duplicate
+//       if (customer.is_walk_in === true || customer.name?.toLowerCase() === 'walk-in') {
+//         // It's a walk-in customer - check for existing one
+//         let existingWalkIn = await Customer.findOne({
+//           where: {
+//             [Op.or]: [
+//               { is_walk_in: true },
+//               { name: "Walk-in" }
+//             ]
+//           },
+//           transaction: t,
+//         });
+
+//         if (existingWalkIn) {
+//           customerId = existingWalkIn.id;
+//         } else {
+//           // Create new walk-in
+//           const newWalkIn = await Customer.create(
+//             { name: "Walk-in", is_walk_in: true },
+//             { transaction: t }
+//           );
+//           customerId = newWalkIn.id;
+//         }
+//       } else {
+//         // Regular customer - create normally
+//         const created = await Customer.create(customer, { transaction: t });
+//         customerId = created.id;
+//       }
+//     }
+
+  
+//     let subtotal = 0;
+//     let tax_total = Number(taxes);
+//     let discount_total = Number(discount);
+//     let coupon_total = Number(coupon);
+
+//     for (const item of items) {
+//       // Calculate item total from unit_price * quantity if total_price not provided
+//       const itemTotal = Number(item.total_price || (item.unit_price * item.quantity) || 0);
+//       subtotal += itemTotal;
+
+//       if (Array.isArray(item.taxes)) {
+//         tax_total += item.taxes.reduce((s, t) => s + Number(t.amount || 0), 0);
+//       }
+//       if (Array.isArray(item.discounts)) {
+//         discount_total += item.discounts.reduce(
+//           (s, d) => s + Number(d.amount || 0),
+//           0
+//         );
+//       }
+//       if (Array.isArray(item.coupons)) {
+//         coupon_total += item.coupons.reduce(
+//           (s, c) => s + Number(c.amount || 0),
+//           0
+//         );
+//       }
+//     }
+
+//     subtotal = round(subtotal);
+//     // Use sent tax value if provided, otherwise calculate from items
+//     tax_total = round(tax_total > 0 ? tax_total : (Number(taxes) || 0));
+//     discount_total = round(discount_total > 0 ? discount_total : (Number(discount) || 0));
+//     coupon_total = round(coupon_total);
+
+//     const total_amount = round(
+//       subtotal + tax_total - discount_total - coupon_total
+//     );
+
+//     const paid_amount = round(
+//       payments.reduce((sum, p) => sum + Number(p.amount || 0), 0)
+//     );
+
+    
+//     if (installment) {
+//       const downPaymentAmount = installment.downPayment || installment.down_payment;
+//       if (paid_amount !== round(downPaymentAmount)) {
+//         throw new Error("Down payment mismatch");
+//       }
+//     }
+
+//     if (credit) {
+//       const creditType = credit.creditType || credit.type;
+//       if (creditType === "full" && paid_amount > 0) {
+//         throw new Error("Full credit cannot have upfront payment");
+//       }
+//       if (creditType === "partial" && paid_amount >= total_amount) {
+//         throw new Error("Partial credit must be less than total");
+//       }
+//     }
+
+//     if (!credit && !installment && paid_amount !== total_amount) {
+//       console.error(`Payment validation failed:
+//         Subtotal: ${subtotal}
+//         Tax: ${tax_total}
+//         Discount: ${discount_total}
+//         Total Expected: ${total_amount}
+//         Total Paid: ${paid_amount}
+//         Payment Methods: ${JSON.stringify(payments)}
+//       `);
+//       throw new Error(`Payment total must equal order total (Expected: ${total_amount}, Paid: ${paid_amount})`);
+//     }
+
+   
+//     const order = await Order.create(
+//       {
+//         customer_id: customerId,
+//         subtotal,
+//         tax_total,
+//         discount_total,
+//         coupon_total,
+//         total_amount,
+//         status: installment ? "pending" : "completed",
+//         purchase_type: "in_store",
+//         admin_id,
+//         note,
+//       },
+//       { transaction: t }
+//     );
+
+   
+//     for (const item of items) {
+//       // Calculate total_price from unit_price * quantity if not provided
+//       const itemTotalPrice = item.total_price || (item.unit_price * item.quantity);
+//       await OrderItem.create(
+//         {
+//           order_id: order.id,
+//           product_id: item.product_id,
+//           variant_id: item.variant_id,
+//           quantity: item.quantity,
+//           unit_price: round(item.unit_price),
+//           total_price: round(itemTotalPrice),
+//         },
+//         { transaction: t }
+//       );
+//     }
+
+   
+//     for (const pay of payments) {
+//       await OrderPayment.create(
+//         {
+//           order_id: order.id,
+//           method: pay.method,
+//           amount: round(pay.amount),
+//           reference: pay.reference || null,
+//         },
+//         { transaction: t }
+//       );
+//     }
+
+    
+//     if (credit) {
+//       await CreditAccount.create(
+//         {
+//           order_id: order.id,
+//           customer_id: customerId,
+//           total_amount,
+//           amount_paid: paid_amount,
+//           balance: round(total_amount - paid_amount),
+//           credit_type: credit.creditType || credit.type,
+//           issued_at: new Date(),
+//         },
+//         { transaction: t }
+//       );
+//     }
+
+  
+//     if (!installment) {
+//       for (const item of items) {
+//         const variant = await Variant.findByPk(item.variant_id, {
+//           transaction: t,
+//           lock: t.LOCK.UPDATE,
+//         });
+
+//         if (!variant) throw new Error("Variant not found");
+
+//         if (variant.quantity < item.quantity) {
+//           throw new Error(
+//             `Insufficient stock for variant ${variant.id}. Available: ${variant.quantity}`
+//           );
+//         }
+
+
+//         const qtyChange = -Math.abs(item.quantity);
+
+//         await InventoryLog.create(
+//           {
+//             variant_id: item.variant_id,
+//            quantity: qtyChange,
+//             type: "sale",
+//             note: credit
+//               ? `CREDIT_ORDER_${order.id}`
+//               : `CASH_ORDER_${order.id}`,
+//             recorded_by: admin_id,
+//             recorded_by_type: 'admin',
+//             reason: 'decrease',
+//           },
+//           { transaction: t }
+//         );
+
+//         await variant.decrement("quantity", {
+//           by: item.quantity,
+//           transaction: t,
+//         });
+//       }
+//     }
+
+    
+//    if (installment) {
+//   const downPayment =
+//     round(installment.downPayment || installment.down_payment);
+
+//   const totalPayments =
+//     installment.numberOfPayments || installment.number_of_payments;
+
+//   if (totalPayments <= 1) {
+//     throw new Error("Number of payments must be greater than 1");
+//   }
+
+  
+//   const installmentCount = totalPayments - 1;
+
+//   const remainingBalance = round(total_amount - downPayment);
+
+//   const perPayment = round(remainingBalance / installmentCount);
+
+ 
+//   const plan = await InstallmentPlan.create(
+//     {
+//       order_id: order.id,
+//       customer_id: customerId,
+//       total_amount,
+//       down_payment: downPayment,
+//       remaining_balance: remainingBalance,
+//       number_of_payments: totalPayments, 
+//       payment_frequency:
+//         installment.paymentFrequency || installment.payment_frequency,
+//       start_date: installment.startDate || installment.start_date,
+//       notes: installment.notes,
+//     },
+//     { transaction: t }
+//   );
+
+  
+//   await InstallmentPayment.create(
+//     {
+//       installment_plan_id: plan.id,
+//       payment_number: 0, 
+//       amount: downPayment,
+//       paid_at: new Date(),
+//       status: "paid",
+//       method: payments[0]?.method || "cash",
+//       type: "down_payment",
+//     },
+//     { transaction: t }
+//   );
+
+//   let allocated = 0;
+
+//   for (let i = 1; i <= installmentCount; i++) {
+//     const due = new Date(installment.startDate || installment.start_date);
+//   due.setMonth(due.getMonth() + i);
+
+//   const amount =
+//     i === installmentCount
+//       ? round(remainingBalance - allocated)
+//       : perPayment;
+
+//   allocated += amount;
+
+//   await InstallmentPayment.create(
+//     {
+//       installment_plan_id: plan.id,
+//       payment_number: i,
+//       amount,
+//       due_date: due,
+//       type: "installment",
+//     },
+//     { transaction: t }
+//   );
+//   }
+// }
+
+
+
+//     const sale = await Order.findByPk(order.id, {
+//       include: [
+//         Customer,
+//         OrderItem,
+//         OrderPayment,
+//         CreditAccount,
+//         InstallmentPlan,
+//       ],
+//     });
+
+//     return res.status(201).json(sale);
+    
+//     await t.commit();
+//   } catch (err) {
+//     await t.rollback();
+//     console.error("❌ createSale error:", err);
+//     return res.status(400).json({ message: err.message });
+//   }
+// };
 
 
 exports.payInstallment = async (req, res) => {
