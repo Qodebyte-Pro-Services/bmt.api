@@ -304,14 +304,39 @@ exports.createSale = async (req, res) => {
 
 
     const sale = await Order.findByPk(order.id, {
+  include: [
+    {
+      model: Customer,
+    },
+    {
+      model: OrderItem,
       include: [
-        Customer,
-        OrderItem,
-        OrderPayment,
-        CreditAccount,
-        InstallmentPlan,
+        {
+          model: Variant,
+          as: "variant",
+        },
       ],
-    });
+    },
+    {
+      model: OrderPayment,
+    },
+    {
+      model: CreditAccount,
+      as: "credit_account",  
+    },
+    {
+      model: InstallmentPlan,
+      as: "installment_plan", 
+      include: [
+        {
+          model: InstallmentPayment,
+          as: "InstallmentPayments",
+        },
+      ],
+    },
+  ],
+});
+
 
     return res.status(201).json(sale);
 
